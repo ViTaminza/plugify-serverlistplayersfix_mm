@@ -1,0 +1,24 @@
+{
+	"$schema": "https://raw.githubusercontent.com/untrustedmodders/plugify/refs/heads/main/schemas/plugin.schema.json",
+	"version": "${SERVERLISTPLAYERSFIX_MM_VERSION}",
+	"name": "serverlistplayersfix_mm",
+	"description": "Plugify port of Source2ZE's ServerListPlayersFix (the plugin that shipped as addons/serverlistplayersfix_mm). Every 5 seconds it calls ISteamGameServer::BUpdateUserData for every connected player (steamid, controller name, score), which populates the player list of the Steam server browser. No methods, no commands, no config files. NOTE: s2sdk 2.18.2 already runs the same update every 5 seconds in its own core; installing this plugin is harmless (the calls are idempotent) but redundant.",
+	"author": "Poggu (Source2ZE), ported to Plugify",
+	"website": "https://github.com/Source2ZE/ServerListPlayersFix",
+	"license": "GPL-3.0",
+	"entry": "bin/serverlistplayersfix_mm",
+	"platforms": [],
+	"language": "cpp",
+	"dependencies": [
+		{
+			"name": "s2sdk",
+			"constraints": ">=2.18.2"
+		},
+		{
+			"name": "hudmenu",
+			"constraints": ">=1.0.0",
+			"optional": true
+		}
+	],
+	"methods": []
+}
