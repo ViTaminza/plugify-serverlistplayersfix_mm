@@ -1,5 +1,7 @@
 # serverlistplayersfix_mm (Plugify)
 
+> **Deprecated:** Steam server-list player updates are already built into s2sdk. Do not install this plugin alongside current s2sdk. It has been removed from canary server 27035.
+
 Plugify port of Source2ZE's ServerListPlayersFix (the plugin that shipped as addons/serverlistplayersfix_mm). Every 5 seconds it calls ISteamGameServer::BUpdateUserData for every connected player (steamid, controller name, score), which populates the player list of the Steam server browser. No methods, no commands, no config files. NOTE: s2sdk 2.18.2 already runs the same update every 5 seconds in its own core; installing this plugin is harmless (the calls are idempotent) but redundant.
 
 Plugify port (fork) of **ServerListPlayersFix** by Poggu (Source2ZE) (Metamod (C++)).
