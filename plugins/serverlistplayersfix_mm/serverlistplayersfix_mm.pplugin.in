@@ -13,11 +13,6 @@
 		{
 			"name": "s2sdk",
 			"constraints": ">=2.18.2"
-		},
-		{
-			"name": "hudmenu",
-			"constraints": ">=1.0.0",
-			"optional": true
 		}
 	],
 	"methods": []

@@ -5,88 +5,96 @@
 namespace steamlink {
 namespace {
 
-using ContextInitFn = void* (*)(void*);
+// The flat entry points libsteam_api exports (steam_api_flat.h). The accessor is the SDK's own
+// type-safe wrapper around SteamInternal_ContextInit - it owns the {callback, counter, pointer}
+// triple that ContextInit calls, so this plugin never has to (and must not) build one itself.
+using GameServerAccessorFn = void* (*)(); // S_API ISteamGameServer* SteamAPI_SteamGameServer_v015();
 using UpdateUserDataFn = bool (*)(void*, std::uint64_t, const char*, std::uint32_t);
-using UserHasLicenseFn = int (*)(void*, std::uint64_t, std::uint32_t);
 
-// The CSteamGameServerAPIContext the engine's steam_api fills in, 0x18 bytes and zero-initialised
-// (the original plugin's `s_CallbackCounterAndContext` has exactly this shape and size).
-alignas(void*) unsigned char g_context[0x18] = {};
+// Symbol names are resolved by RTLD_DEFAULT lookup, never an interface version guessed by the
+// plugin: both are exact exports of the steam_api build the CS2 server runs (verified with nm on
+// the deployed libsteam_api.so - the accessor under this name and the flat wrapper are present).
+constexpr const char* kGameServerAccessorSymbol = "SteamAPI_SteamGameServer_v015";
+constexpr const char* kUpdateUserDataSymbol = "SteamAPI_ISteamGameServer_BUpdateUserData";
 
-ContextInitFn g_contextInit = nullptr;
+GameServerAccessorFn g_gameServerAccessor = nullptr;
 UpdateUserDataFn g_updateUserData = nullptr;
-UserHasLicenseFn g_userHasLicense = nullptr;
-bool g_initialised = false;
 
-void* GameServerUncached() {
-	if (g_contextInit == nullptr) {
-		return nullptr;
-	}
-	void* context = g_contextInit(g_context);
-	if (context == nullptr) {
-		return nullptr;
-	}
-	return *reinterpret_cast<void**>(context);
+template <typename Fn>
+Fn Resolve(const char* name) {
+	return reinterpret_cast<Fn>(dlsym(RTLD_DEFAULT, name));
+}
+
+// Forget a half-resolved state: IsAvailable()/GameServer()/the wrapper must never act on a
+// partially resolved API.
+void Clear() {
+	g_gameServerAccessor = nullptr;
+	g_updateUserData = nullptr;
 }
 
 } // namespace
 
 bool Init(std::string& error) {
-	if (g_initialised) {
+	// Called on every server frame while the symbols are missing (the update loop retries), so a
+	// successful resolution short-circuits.
+	if (g_gameServerAccessor != nullptr && g_updateUserData != nullptr) {
 		return true;
 	}
 
-	// RTLD_DEFAULT: the CS2 server process itself (steam_api is loaded globally by the engine /
-	// the launcher, which is why the Metamod originals could import these symbols directly).
-	g_contextInit = reinterpret_cast<ContextInitFn>(dlsym(RTLD_DEFAULT, "SteamInternal_ContextInit"));
-	g_updateUserData =
-		reinterpret_cast<UpdateUserDataFn>(dlsym(RTLD_DEFAULT, "SteamAPI_ISteamGameServer_BUpdateUserData"));
-	g_userHasLicense =
-		reinterpret_cast<UserHasLicenseFn>(dlsym(RTLD_DEFAULT, "SteamAPI_ISteamGameServer_UserHasLicenseForApp"));
+	Clear();
+	g_gameServerAccessor = Resolve<GameServerAccessorFn>(kGameServerAccessorSymbol);
+	g_updateUserData = Resolve<UpdateUserDataFn>(kUpdateUserDataSymbol);
 
-	if (g_contextInit == nullptr) {
-		error = "SteamInternal_ContextInit not found in the process (steam_api not loaded?)";
+	if (g_gameServerAccessor == nullptr) {
+		Clear();
+		error = std::string(kGameServerAccessorSymbol) +
+				" not found in the process (is steam_api loaded, and is the game server API part of it?)";
 		return false;
 	}
-	if (g_updateUserData == nullptr && g_userHasLicense == nullptr) {
-		error = "SteamAPI_ISteamGameServer_* wrappers not found in the process";
+	if (g_updateUserData == nullptr) {
+		Clear();
+		error = std::string(kUpdateUserDataSymbol) + " not found in the process";
 		return false;
 	}
-	// Only a fully successful resolution is remembered: a failed call reported "success" on the
-	// next one while the entry points stayed missing, and nothing could ever retry (steam_api may
-	// be mapped into the process after the plugin loaded).
-	g_initialised = true;
 	return true;
 }
 
 bool IsAvailable() {
-	return g_contextInit != nullptr && (g_updateUserData != nullptr || g_userHasLicense != nullptr);
+	return g_gameServerAccessor != nullptr && g_updateUserData != nullptr;
+}
+
+void Shutdown() {
+	Clear();
 }
 
 void* GameServer() {
-	return GameServerUncached();
+	if (g_gameServerAccessor == nullptr) {
+		return nullptr;
+	}
+	try {
+		// The accessor is the official lookup: it returns the interface the engine brought up (and a
+		// valid, initialised context), or nullptr while the Steam game server API is not up yet.
+		return g_gameServerAccessor();
+	} catch (...) {
+		return nullptr;
+	}
 }
 
 bool BUpdateUserData(std::uint64_t steamId, const char* name, std::uint32_t score) {
 	if (g_updateUserData == nullptr) {
 		return false;
 	}
-	void* gameServer = GameServerUncached();
+	void* gameServer = GameServer();
 	if (gameServer == nullptr) {
+		// The engine has not brought its game server API up yet (or steam_api is not the game
+		// server build): answer "not published" instead of calling a wrapper with a null instance.
 		return false;
 	}
-	return g_updateUserData(gameServer, steamId, name != nullptr ? name : "", score);
-}
-
-int UserHasLicenseForApp(std::uint64_t steamId, std::uint32_t appId) {
-	if (g_userHasLicense == nullptr) {
-		return -1;
+	try {
+		return g_updateUserData(gameServer, steamId, name != nullptr ? name : "", score);
+	} catch (...) {
+		return false;
 	}
-	void* gameServer = GameServerUncached();
-	if (gameServer == nullptr) {
-		return -1;
-	}
-	return g_userHasLicense(gameServer, steamId, appId);
 }
 
 } // namespace steamlink

@@ -66,18 +66,41 @@ should leave it uninstalled.
 `plugins/serverlistplayersfix_mm` (manifest name = the original `.vdf` alias
 `serverlistplayersfix_mm`):
 
-* `src/plugin.cpp` — the same 5 s loop: `pisex::GetSteamID64(slot)` (skip 0),
-  `pisex::GetPlayerController(slot)` (skip none), `pisex::GetPlayerName(slot)`,
-  `CCSPlayerController::m_iScore` as the score, then `steamlink::BUpdateUserData`.
-* `src/steam_gameserver.{hpp,cpp}` — the `ISteamGameServer` access s2sdk does not expose: resolves
-  `SteamInternal_ContextInit` + `SteamAPI_ISteamGameServer_BUpdateUserData` from the process with
-  `dlsym(RTLD_DEFAULT, …)` (the original imported the same symbols; the CS2 server loads stem_api
-  globally) and fills a 0x18-byte context exactly like the original's
-  `s_CallbackCounterAndContext`. Degrades to "unavailable" without them.
+* `src/plugin.cpp` — the same 5 s loop, pure s2sdk without `pisexcompat`
+  (`docs/PLUGIN_STANDARD.md` §7). The map gate (`PITFALLS B1/B2`) and the client/controller checks
+  (`C2`) live in the file itself: per slot `GetClientSteamID64` (skip 0; a bot is skipped before
+  it, `B5`), `PlayerSlotToEntHandle` validated with `IsValidEntHandle` and the slot's entity
+  pointer with `IsValidEntPointer`, `GetClientName` (`"<unknown>"` counts as `""`), and
+  `CCSPlayerController::m_iScore` through `GetEntSchema` as the score; then
+  `steamlink::BUpdateUserData`. `tests/` covers the gates, the slot count and the unload path
+  with fake s2sdk/steamlink bindings — no engine needed.
+* `src/steam_gameserver.{hpp,cpp}` — the `ISteamGameServer` access s2sdk does not expose. It
+  resolves the library's official flat accessor
+  `SteamAPI_SteamGameServer_v015()` plus `SteamAPI_ISteamGameServer_BUpdateUserData` from the
+  process with `dlsym(RTLD_DEFAULT, …)` (the original imported the same symbols; the CS2 server
+  loads `steam_api` globally). The accessor is the SDK's own wrapper around
+  `SteamInternal_ContextInit`: it owns the `{callback, counter, pointer}` triple the library calls,
+  and the interface pointer is never cached (the engine can deactivate and recreate it), so every
+  push goes to the current instance. Missing symbols, a half-resolved API or an interface that is
+  not up yet all degrade to "not published" (`false` / `nullptr`), and `Shutdown()` (OnPluginEnd)
+  only forgets the resolved pointers, so a reload resolves them again.
+  **Version 1.1.1** replaced an earlier implementation that called `SteamInternal_ContextInit`
+  itself with a zero-initialised 0x18-byte buffer: `steam_api_internal.h:32-36` defines that
+  buffer as `{ void (*pFn)(void*); uintptr_t counter; void *ptr; }` and the library *calls* `pFn`,
+  so the null callback is a SIGSEGV with RIP = 0 — exactly how the identical code crashed the live
+  server in PlayersInfo 1.1.0 on 27035. This plugin was never installed on a server, so it never
+  ran that path; the code was the same.
+* Tests: `tests/serverlistplayersfix_mm_tests.cpp` drives the plugin loop with fake s2sdk and
+  steamlink entry points (map gate, slot guards, 5 s cadence, slot clamp, retry, unload), and
+  `tests/steamlink_tests.cpp` compiles the *real* `src/steam_gameserver.cpp` against a fake
+  `dlsym()`: it proves the two documented flat symbols are the only ones requested, that
+  `SteamInternal_ContextInit` is never resolved, that a missing accessor/wrapper and a null
+  interface fail soft, that the update wrapper receives the accessor's current instance pointer
+  (including after the engine recreates it), and that `Shutdown()` + a later `Init()` work.
 * Differences from the original: no GameFrame/Steam-API vtable hooks (Plugify plugins have no
-  `ISource2Server` handle; steam_api re-initialises the context on first use), and
+  `ISource2Server` handle; the official accessor owns the interface context), and
   `IServerGameClients::GetPlayerScore` is approximated by the controller's `m_iScore`
-  (pisexcompat records that field; the engine method is not exposed by s2sdk). To check in game:
-  the score column in the Steam browser should match the scoreboard.
+  (read through s2sdk's `GetEntSchema`; the engine method is not exposed by s2sdk). To check in
+  game: the score column in the Steam browser should match the scoreboard.
 
 No config files, no commands, no cvars — the original has none.
